@@ -56,6 +56,7 @@ type Property struct {
 	JsonFieldName string
 	Schema        Schema
 	Required      bool
+	Validation    string
 }
 
 func (p Property) GoFieldName() string {
@@ -151,6 +152,10 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 					return Schema{}, errors.Wrap(err, fmt.Sprintf("error generating Go schema for property '%s'", pName))
 				}
 
+				if p.Value.ReadOnly {
+					continue
+				}
+
 				required := StringInArray(pName, schema.Required)
 
 				if pSchema.HasAdditionalProperties && pSchema.RefType == "" {
@@ -174,6 +179,7 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 					JsonFieldName: pName,
 					Schema:        pSchema,
 					Required:      required,
+					Validation:    GenerateValidationRules(p, required),
 				}
 				outSchema.Properties = append(outSchema.Properties, prop)
 			}
@@ -207,7 +213,9 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 			outSchema.GoType = "[]" + arrayType.TypeDecl()
 		case "integer":
 			// We default to int if format doesn't ask for something else.
-			if f == "int64" {
+			if true {
+				outSchema.GoType = "json.Number"
+			} else if f == "int64" {
 				outSchema.GoType = "int64"
 			} else if f == "int32" {
 				outSchema.GoType = "int32"
@@ -218,7 +226,9 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 			}
 		case "number":
 			// We default to float for "number"
-			if f == "double" {
+			if true {
+				outSchema.GoType = "json.Number"
+			} else if f == "double" {
 				outSchema.GoType = "float64"
 			} else if f == "float" || f == "" {
 				outSchema.GoType = "float32"
@@ -270,11 +280,19 @@ func GenFieldsFromProperties(props []Property) []string {
 	var fields []string
 	for _, p := range props {
 		field := fmt.Sprintf("    %s %s", p.GoFieldName(), p.GoTypeDef())
+		tags := ""
 		if p.Required {
-			field += fmt.Sprintf(" `json:\"%s\"`", p.JsonFieldName)
+			tags += fmt.Sprintf("json:\"%s\"", p.JsonFieldName)
 		} else {
-			field += fmt.Sprintf(" `json:\"%s,omitempty\"`", p.JsonFieldName)
+			tags += fmt.Sprintf("json:\"%s,omitempty\"", p.JsonFieldName)
 		}
+
+		if p.Validation != "" {
+			tags += fmt.Sprintf("; validate:\"%s\"", p.Validation)
+		}
+
+		field += fmt.Sprintf(" `%s`", tags)
+
 		fields = append(fields, field)
 	}
 	return fields

@@ -148,8 +148,18 @@ func DescribeParameters(params openapi3.Parameters, path []string) ([]ParameterD
 				param.Name, err)
 		}
 
+		paramName := ""
+		if strings.ContainsAny(param.Name, "[") {
+			paramNameParts := strings.Split(param.Name, "[")
+			for _, part := range paramNameParts {
+				paramName += strings.Title(strings.Replace(part, "]", "", 1))
+			}
+		} else {
+			paramName = param.Name
+		}
+
 		pd := ParameterDefinition{
-			ParamName: param.Name,
+			ParamName: paramName,
 			In:        param.In,
 			Required:  param.Required,
 			Spec:      param,
