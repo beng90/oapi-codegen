@@ -8,6 +8,15 @@ import (
 	"github.com/pkg/errors"
 )
 
+type ComponentType string
+
+const (
+	ComponentSchemas       ComponentType = "Schemas"
+	ComponentRequestBodies ComponentType = "RequestBodies"
+	ComponentResponses     ComponentType = "Responses"
+	ComponentParameters    ComponentType = "Parameters"
+)
+
 // This describes a Schema, a type definition.
 type Schema struct {
 	GoType  string // The Go type needed to represent the schema
@@ -53,10 +62,11 @@ func (s Schema) GetAdditionalTypeDefs() []TypeDefinition {
 }
 
 type Property struct {
-	JsonFieldName string
-	Schema        Schema
-	Required      bool
-	Validation    string
+	JsonFieldName  string
+	Schema         Schema
+	Required       bool
+	Validation     string
+	IsRequestParam bool
 }
 
 func (p Property) GoFieldName() string {
@@ -81,7 +91,7 @@ func PropertiesEqual(a, b Property) bool {
 	return a.JsonFieldName == b.JsonFieldName && a.Schema.TypeDecl() == b.Schema.TypeDecl() && a.Required == b.Required
 }
 
-func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
+func GenerateGoSchema(sref *openapi3.SchemaRef, path []string, componentType *ComponentType) (Schema, error) {
 	schema := sref.Value
 
 	// If Ref is set on the SchemaRef, it means that this type is actually a reference to
@@ -111,7 +121,7 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 	// so that in a RESTful paradigm, the Create operation can return
 	// (object, id), so that other operations can refer to (id)
 	if schema.AllOf != nil {
-		mergedSchema, err := MergeSchemas(schema.AllOf, path)
+		mergedSchema, err := MergeSchemas(schema.AllOf, path, componentType)
 		if err != nil {
 			return Schema{}, errors.Wrap(err, "error merging schemas")
 		}
@@ -121,6 +131,11 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 
 	// Schema type and format, eg. string / binary
 	t := schema.Type
+
+	isRequestComponent := false
+	if componentType != nil {
+		isRequestComponent = StringInArray(string(*componentType), []string{string(ComponentRequestBodies), string(ComponentParameters)})
+	}
 
 	outSchema := Schema{
 		RefType: refType,
@@ -147,13 +162,9 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 			for _, pName := range SortedSchemaKeys(schema.Properties) {
 				p := schema.Properties[pName]
 				propertyPath := append(path, pName)
-				pSchema, err := GenerateGoSchema(p, propertyPath)
+				pSchema, err := GenerateGoSchema(p, propertyPath, componentType)
 				if err != nil {
 					return Schema{}, errors.Wrap(err, fmt.Sprintf("error generating Go schema for property '%s'", pName))
-				}
-
-				if p.Value.ReadOnly {
-					continue
 				}
 
 				required := StringInArray(pName, schema.Required)
@@ -189,7 +200,7 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 				GoType: "interface{}",
 			}
 			if schema.AdditionalProperties != nil {
-				additionalSchema, err := GenerateGoSchema(schema.AdditionalProperties, path)
+				additionalSchema, err := GenerateGoSchema(schema.AdditionalProperties, path, componentType)
 				if err != nil {
 					return Schema{}, errors.Wrap(err, "error generating type for additional properties")
 				}
@@ -206,14 +217,14 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 		case "array":
 			// For arrays, we'll get the type of the Items and throw a
 			// [] in front of it.
-			arrayType, err := GenerateGoSchema(schema.Items, path)
+			arrayType, err := GenerateGoSchema(schema.Items, path, componentType)
 			if err != nil {
 				return Schema{}, errors.Wrap(err, "error generating type for array")
 			}
 			outSchema.GoType = "[]" + arrayType.TypeDecl()
 		case "integer":
 			// We default to int if format doesn't ask for something else.
-			if true {
+			if isRequestComponent {
 				outSchema.GoType = "json.Number"
 			} else if f == "int64" {
 				outSchema.GoType = "int64"
@@ -226,7 +237,7 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 			}
 		case "number":
 			// We default to float for "number"
-			if true {
+			if isRequestComponent {
 				outSchema.GoType = "json.Number"
 			} else if f == "double" {
 				outSchema.GoType = "float64"
@@ -244,7 +255,11 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 			// Special case string formats here.
 			switch f {
 			case "date-time", "date":
-				outSchema.GoType = "time.Time"
+				if isRequestComponent {
+					outSchema.GoType = "string"
+				} else {
+					outSchema.GoType = "time.Time"
+				}
 			case "json":
 				outSchema.GoType = "json.RawMessage"
 				outSchema.SkipOptionalPointer = true
@@ -280,15 +295,23 @@ func GenFieldsFromProperties(props []Property) []string {
 	var fields []string
 	for _, p := range props {
 		field := fmt.Sprintf("    %s %s", p.GoFieldName(), p.GoTypeDef())
+
+		tagName := "json"
+		if p.IsRequestParam {
+			tagName = "schema"
+			if !p.Required && p.Validation != "" {
+				p.Validation = "omitempty," + p.Validation
+			}
+		}
 		tags := ""
 		if p.Required {
-			tags += fmt.Sprintf("json:\"%s\"", p.JsonFieldName)
+			tags += fmt.Sprintf("%s:\"%s\"", tagName, p.JsonFieldName)
 		} else {
-			tags += fmt.Sprintf("json:\"%s,omitempty\"", p.JsonFieldName)
+			tags += fmt.Sprintf("%s:\"%s,omitempty\"", tagName, p.JsonFieldName)
 		}
 
 		if p.Validation != "" {
-			tags += fmt.Sprintf("; validate:\"%s\"", p.Validation)
+			tags += fmt.Sprintf(" validate:\"%s\"", p.Validation)
 		}
 
 		field += fmt.Sprintf(" `%s`", tags)
@@ -318,7 +341,7 @@ func GenStructFromSchema(schema Schema) string {
 }
 
 // Merge all the fields in the schemas supplied into one giant schema.
-func MergeSchemas(allOf []*openapi3.SchemaRef, path []string) (Schema, error) {
+func MergeSchemas(allOf []*openapi3.SchemaRef, path []string, componentType *ComponentType) (Schema, error) {
 	var outSchema Schema
 	for _, schemaOrRef := range allOf {
 		ref := schemaOrRef.Ref
@@ -332,7 +355,7 @@ func MergeSchemas(allOf []*openapi3.SchemaRef, path []string) (Schema, error) {
 			}
 		}
 
-		schema, err := GenerateGoSchema(schemaOrRef, path)
+		schema, err := GenerateGoSchema(schemaOrRef, path, componentType)
 		if err != nil {
 			return Schema{}, errors.Wrap(err, "error generating Go schema in allOf")
 		}
@@ -363,7 +386,7 @@ func MergeSchemas(allOf []*openapi3.SchemaRef, path []string) (Schema, error) {
 
 	// Now, we generate the struct which merges together all the fields.
 	var err error
-	outSchema.GoType, err = GenStructFromAllOf(allOf, path)
+	outSchema.GoType, err = GenStructFromAllOf(allOf, path, componentType)
 	if err != nil {
 		return Schema{}, errors.Wrap(err, "unable to generate aggregate type for AllOf")
 	}
@@ -373,7 +396,7 @@ func MergeSchemas(allOf []*openapi3.SchemaRef, path []string) (Schema, error) {
 // This function generates an object that is the union of the objects in the
 // input array. In the case of Ref objects, we use an embedded struct, otherwise,
 // we inline the fields.
-func GenStructFromAllOf(allOf []*openapi3.SchemaRef, path []string) (string, error) {
+func GenStructFromAllOf(allOf []*openapi3.SchemaRef, path []string, componentType *ComponentType) (string, error) {
 	// Start out with struct {
 	objectParts := []string{"struct {"}
 	for _, schemaOrRef := range allOf {
@@ -396,7 +419,7 @@ func GenStructFromAllOf(allOf []*openapi3.SchemaRef, path []string) (string, err
 		} else {
 			// Inline all the fields from the schema into the output struct,
 			// just like in the simple case of generating an object.
-			goSchema, err := GenerateGoSchema(schemaOrRef, path)
+			goSchema, err := GenerateGoSchema(schemaOrRef, path, componentType)
 			if err != nil {
 				return "", err
 			}
@@ -412,13 +435,15 @@ func GenStructFromAllOf(allOf []*openapi3.SchemaRef, path []string) (string, err
 // This constructs a Go type for a parameter, looking at either the schema or
 // the content, whichever is available
 func paramToGoType(param *openapi3.Parameter, path []string) (Schema, error) {
+	componentType := ComponentParameters
+
 	if param.Content == nil && param.Schema == nil {
 		return Schema{}, fmt.Errorf("parameter '%s' has no schema or content", param.Name)
 	}
 
 	// We can process the schema through the generic schema processor
 	if param.Schema != nil {
-		return GenerateGoSchema(param.Schema, path)
+		return GenerateGoSchema(param.Schema, path, &componentType)
 	}
 
 	// At this point, we have a content type. We know how to deal with
@@ -440,5 +465,5 @@ func paramToGoType(param *openapi3.Parameter, path []string) (Schema, error) {
 	}
 
 	// For json, we go through the standard schema mechanism
-	return GenerateGoSchema(mt.Schema, path)
+	return GenerateGoSchema(mt.Schema, path, &componentType)
 }

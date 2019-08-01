@@ -151,8 +151,12 @@ func DescribeParameters(params openapi3.Parameters, path []string) ([]ParameterD
 		paramName := ""
 		if strings.ContainsAny(param.Name, "[") {
 			paramNameParts := strings.Split(param.Name, "[")
-			for _, part := range paramNameParts {
-				paramName += strings.Title(strings.Replace(part, "]", "", 1))
+			for i, part := range paramNameParts {
+				if i > 0 {
+					paramName += strings.Title(strings.Replace(part, "]", "", 1))
+				} else {
+					paramName = part
+				}
 			}
 		} else {
 			paramName = param.Name
@@ -261,7 +265,7 @@ func (o *OperationDefinition) GetResponseTypeDefinitions() ([]TypeDefinition, er
 				contentType := responseRef.Value.Content[contentTypeName]
 				// We can only generate a type if we have a schema:
 				if contentType.Schema != nil {
-					responseSchema, err := GenerateGoSchema(contentType.Schema, []string{responseName})
+					responseSchema, err := GenerateGoSchema(contentType.Schema, []string{responseName}, nil)
 					if err != nil {
 						return nil, errors.Wrap(err, fmt.Sprintf("Unable to determine Go type for %s.%s", o.OperationId, contentTypeName))
 					}
@@ -455,7 +459,7 @@ func GenerateBodyDefinitions(operationID string, bodyOrRef *openapi3.RequestBody
 		}
 
 		bodyTypeName := operationID + tag + "Body"
-		bodySchema, err := GenerateGoSchema(content.Schema, []string{bodyTypeName})
+		bodySchema, err := GenerateGoSchema(content.Schema, []string{bodyTypeName}, nil)
 		if err != nil {
 			return nil, nil, errors.Wrap(err, "error generating request body definition")
 		}
@@ -536,9 +540,11 @@ func GenerateParamsTypes(op OperationDefinition) []TypeDefinition {
 			})
 		}
 		prop := Property{
-			JsonFieldName: param.ParamName,
-			Required:      param.Required,
-			Schema:        pSchema,
+			JsonFieldName:  param.ParamName,
+			Required:       param.Required,
+			Schema:         pSchema,
+			IsRequestParam: true,
+			Validation:     GenerateValidationRules(param.Spec.Schema, param.Required),
 		}
 		s.Properties = append(s.Properties, prop)
 	}

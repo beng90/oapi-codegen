@@ -268,11 +268,13 @@ func GenerateTypeDefinitions(t *template.Template, swagger *openapi3.Swagger, op
 // components/schemas section of the Swagger spec.
 func GenerateTypesForSchemas(t *template.Template, schemas map[string]*openapi3.SchemaRef) ([]TypeDefinition, error) {
 	types := make([]TypeDefinition, 0)
+	componentType := ComponentSchemas
+
 	// We're going to define Go types for every object under components/schemas
 	for _, schemaName := range SortedSchemaKeys(schemas) {
 		schemaRef := schemas[schemaName]
 
-		goSchema, err := GenerateGoSchema(schemaRef, []string{schemaName})
+		goSchema, err := GenerateGoSchema(schemaRef, []string{schemaName}, &componentType)
 		if err != nil {
 			return nil, errors.Wrap(err, fmt.Sprintf("error converting Schema %s to Go type", schemaName))
 		}
@@ -324,6 +326,7 @@ func GenerateTypesForParameters(t *template.Template, params map[string]*openapi
 // components/responses section of the Swagger spec.
 func GenerateTypesForResponses(t *template.Template, responses openapi3.Responses) ([]TypeDefinition, error) {
 	var types []TypeDefinition
+	componentType := ComponentResponses
 
 	for _, responseName := range SortedResponsesKeys(responses) {
 		responseOrRef := responses[responseName]
@@ -334,7 +337,7 @@ func GenerateTypesForResponses(t *template.Template, responses openapi3.Response
 		response := responseOrRef.Value
 		jsonResponse, found := response.Content["application/json"]
 		if found {
-			goType, err := GenerateGoSchema(jsonResponse.Schema, []string{responseName})
+			goType, err := GenerateGoSchema(jsonResponse.Schema, []string{responseName}, &componentType)
 			if err != nil {
 				return nil, errors.Wrap(err, fmt.Sprintf("error generating Go type for schema in response %s", responseName))
 			}
@@ -363,6 +366,7 @@ func GenerateTypesForResponses(t *template.Template, responses openapi3.Response
 // components/requestBodies section of the Swagger spec.
 func GenerateTypesForRequestBodies(t *template.Template, bodies map[string]*openapi3.RequestBodyRef) ([]TypeDefinition, error) {
 	var types []TypeDefinition
+	componentType := ComponentRequestBodies
 
 	for _, bodyName := range SortedRequestBodyKeys(bodies) {
 		bodyOrRef := bodies[bodyName]
@@ -372,7 +376,7 @@ func GenerateTypesForRequestBodies(t *template.Template, bodies map[string]*open
 		response := bodyOrRef.Value
 		jsonBody, found := response.Content["application/json"]
 		if found {
-			goType, err := GenerateGoSchema(jsonBody.Schema, []string{bodyName})
+			goType, err := GenerateGoSchema(jsonBody.Schema, []string{bodyName}, &componentType)
 			if err != nil {
 				return nil, errors.Wrap(err, fmt.Sprintf("error generating Go type for schema in body %s", bodyName))
 			}
